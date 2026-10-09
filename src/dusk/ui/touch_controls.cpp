@@ -38,6 +38,9 @@ constexpr float kLeftZoneWidth = 0.46f;
 constexpr float kRightZoneStart = 0.52f;
 constexpr u8 kTriggerAnalog = 180;
 constexpr auto kLDoubleTapWindow = std::chrono::milliseconds(300);
+constexpr auto kCameraDoubleTapWindow = std::chrono::milliseconds(280);
+constexpr float kCameraDoubleTapMaxDistDp = 26.f;
+constexpr float kCameraZoneTopDp = 16.f;
 constexpr auto kHoldActionDuration = std::chrono::milliseconds(450);
 constexpr float kFaceIconTargetRatio = 0.76f;
 constexpr float kPressedScale = 0.94f;
@@ -687,6 +690,8 @@ void TouchControls::sync_l_lock_state() noexcept {
 void TouchControls::clear_motion_touch_input() noexcept {
     mMoveTouch = {};
     mCameraTouch = {};
+    mTriggerCameraResetPending = false;
+    mLastCameraTapTime = {};
     touch_camera::clear();
     if (mControlStick != nullptr) {
         mControlStick->SetClass("active", false);
@@ -778,9 +783,10 @@ void TouchControls::sync_virtual_input() noexcept {
     status.err = PAD_ERR_NONE;
     status.button = mButtonMask;
 
-    if (mLPressed || mLLatched || mManualLLatched) {
+    if (mLPressed || mLLatched || mManualLLatched || mTriggerCameraResetPending) {
         status.button |= PAD_TRIGGER_L;
         status.triggerLeft = kTriggerAnalog;
+        mTriggerCameraResetPending = false;
     }
     if (mRTriggerHeld) {
         status.button |= PAD_TRIGGER_R;
@@ -1279,15 +1285,13 @@ void TouchControls::handle_touch_down(Rml::Event& event) noexcept {
                 .current = position,
                 .active = true,
             };
+            mCameraTouchStartPos = position;
+            mCameraTouchStartTime = clock::now();
         }
         return;
     }
 
-    if (!inAnalogZone) {
-        return;
-    }
-
-    if (!mMoveTouch.active && inLeftZone) {
+    if (!mMoveTouch.active && inLeftZone && inAnalogZone) {
         mMoveTouch = {
             .id = id,
             .start = position,
@@ -1295,12 +1299,19 @@ void TouchControls::handle_touch_down(Rml::Event& event) noexcept {
             .active = true,
         };
     } else if (!mCameraTouch.active && position.x > width * kRightZoneStart) {
-        mCameraTouch = {
-            .id = id,
-            .start = position,
-            .current = position,
-            .active = true,
-        };
+        // En la zona derecha libre, permitir arrastre de cámara en prácticamente toda la pantalla,
+        // excluyendo únicamente el margen superior de la barra de acciones
+        const float cameraTop = mSafeInsets.top + kCameraZoneTopDp * touch_dp_scale();
+        if (position.y >= cameraTop) {
+            mCameraTouch = {
+                .id = id,
+                .start = position,
+                .current = position,
+                .active = true,
+            };
+            mCameraTouchStartPos = position;
+            mCameraTouchStartTime = clock::now();
+        }
     }
 }
 
@@ -1319,12 +1330,33 @@ void TouchControls::handle_touch_motion(Rml::Event& event) noexcept {
     const auto position = touch_event_position(event);
     if (mMoveTouch.active && mMoveTouch.id == id) {
         mMoveTouch.current = position;
+        const float stickRadius = kStickRadiusDp * touch_dp_scale();
+        if (stickRadius > 0.f) {
+            const auto delta = mMoveTouch.current - mMoveTouch.start;
+            const float length = std::sqrt(delta.x * delta.x + delta.y * delta.y);
+            // Dynamic follow-through: si el dedo se mueve más allá del radio, el stick
+            // se desplaza suavemente para responder de inmediato ante cambios de dirección.
+            if (length > stickRadius) {
+                mMoveTouch.start = mMoveTouch.current - (delta / length) * stickRadius;
+            }
+        }
     }
     if (mCameraTouch.active && mCameraTouch.id == id) {
         const auto delta = position - mCameraTouch.current;
         mCameraTouch.current = position;
         const float scale = touch_dp_scale();
-        touch_camera::add_delta(delta.x / scale, delta.y / scale);
+        if (scale > 0.f) {
+            float deltaX = delta.x / scale;
+            float deltaY = delta.y / scale;
+
+            // Al apuntar (modo de puntería fino), reducir un poco la escala para mayor precisión
+            if (dCamera_c::isAimActive()) {
+                deltaX *= 0.85f;
+                deltaY *= 0.85f;
+            }
+
+            touch_camera::add_delta(deltaX, deltaY);
+        }
     }
 }
 
@@ -1343,6 +1375,29 @@ void TouchControls::handle_touch_up(Rml::Event& event) noexcept {
         mMoveTouch = {};
     }
     if (mCameraTouch.active && mCameraTouch.id == id) {
+        const auto now = clock::now();
+        const auto totalDrag = position - mCameraTouchStartPos;
+        const float dragDist = std::sqrt(totalDrag.x * totalDrag.x + totalDrag.y * totalDrag.y);
+        const float maxTapDist = kCameraDoubleTapMaxDistDp * touch_dp_scale();
+
+        // Si fue un tap breve sin arrastre significativo
+        if (dragDist <= maxTapDist) {
+            const auto tapOffset = position - mLastCameraTapPos;
+            const float tapDist = std::sqrt(tapOffset.x * tapOffset.x + tapOffset.y * tapOffset.y);
+            if (mLastCameraTapTime != clock::time_point{} &&
+                now - mLastCameraTapTime <= kCameraDoubleTapWindow &&
+                tapDist <= maxTapDist * 1.5f)
+            {
+                // Doble toque detectado en la zona de cámara: recentrar cámara (L-Reset)
+                mTriggerCameraResetPending = true;
+                mLastCameraTapTime = {};
+            } else {
+                mLastCameraTapTime = now;
+                mLastCameraTapPos = position;
+            }
+        } else {
+            mLastCameraTapTime = {};
+        }
         mCameraTouch = {};
     }
 }
@@ -1363,6 +1418,7 @@ void TouchControls::handle_touch_cancel(Rml::Event& event) noexcept {
     }
     if (mCameraTouch.active && mCameraTouch.id == id) {
         mCameraTouch = {};
+        mLastCameraTapTime = {};
     }
 }
 

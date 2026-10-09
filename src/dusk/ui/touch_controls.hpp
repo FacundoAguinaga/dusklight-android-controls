@@ -128,6 +128,11 @@ private:
     bool mMenuPointerTouchActive = false;
     clock::time_point mLPressStartTime{};
     clock::time_point mLastLTapTime{};
+    Rml::Vector2f mCameraTouchStartPos{};
+    clock::time_point mCameraTouchStartTime{};
+    clock::time_point mLastCameraTapTime{};
+    Rml::Vector2f mLastCameraTapPos{};
+    bool mTriggerCameraResetPending = false;
 };
 
 }  // namespace dusk::ui
