@@ -1375,6 +1375,7 @@ void TouchControls::handle_touch_up(Rml::Event& event) noexcept {
         mMoveTouch = {};
     }
     if (mCameraTouch.active && mCameraTouch.id == id) {
+        const auto position = touch_event_position(event);
         const auto now = clock::now();
         const auto totalDrag = position - mCameraTouchStartPos;
         const float dragDist = std::sqrt(totalDrag.x * totalDrag.x + totalDrag.y * totalDrag.y);
