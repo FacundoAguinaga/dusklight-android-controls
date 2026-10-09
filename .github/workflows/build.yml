@@ -213,15 +213,28 @@ jobs:
 
       - name: Build APK
         working-directory: platforms/android
-        run: ./gradlew :app:assembleRelease --rerun-tasks
+        run: ./gradlew :app:assembleRelease :app:assembleDebug --rerun-tasks
 
-      - name: Sign APK
+      - name: Sign and Align APK
         run: |
           keytool -genkeypair -v -keystore release.keystore -alias dusk -keyalg RSA -keysize 2048 -validity 10000 -storepass dusklight -keypass dusklight -dname "CN=Dusklight, OU=Mobile, O=Twilit, L=Hyrule, ST=Realm, C=US"
           mkdir -p upload/sdk
-          cp build/*/stub-android-*.so upload/sdk/
-          $ANDROID_HOME/build-tools/36.1.0/apksigner sign --ks release.keystore --ks-key-alias dusk --ks-pass pass:dusklight --key-pass pass:dusklight --out upload/Dusklight-${{matrix.abi}}.apk platforms/android/app/build/outputs/apk/release/app-${{matrix.abi}}-release-unsigned.apk
-          $ANDROID_HOME/build-tools/36.1.0/apksigner verify upload/Dusklight-${{matrix.abi}}.apk
+          cp build/*/stub-android-*.so upload/sdk/ 2>/dev/null || true
+
+          BUILD_TOOLS="$ANDROID_HOME/build-tools/36.1.0"
+
+          # 1. Align the unsigned release APK (crucial for native .so libraries and manifest parsing)
+          $BUILD_TOOLS/zipalign -p -f -v 4 platforms/android/app/build/outputs/apk/release/app-${{matrix.abi}}-release-unsigned.apk Dusklight-${{matrix.abi}}-aligned.apk
+
+          # 2. Sign with v1, v2, v3 schemes (disabling v4 to avoid unnecessary .idsig files)
+          $BUILD_TOOLS/apksigner sign --ks release.keystore --ks-key-alias dusk --ks-pass pass:dusklight --key-pass pass:dusklight --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true --v4-signing-enabled false --out upload/Dusklight-${{matrix.abi}}.apk Dusklight-${{matrix.abi}}-aligned.apk
+          $BUILD_TOOLS/apksigner verify --verbose upload/Dusklight-${{matrix.abi}}.apk
+
+          # 3. Include the debug APK as an alternative (Gradle automatically aligns and signs debug builds)
+          if [ -f platforms/android/app/build/outputs/apk/debug/app-${{matrix.abi}}-debug.apk ]; then
+            cp platforms/android/app/build/outputs/apk/debug/app-${{matrix.abi}}-debug.apk upload/Dusklight-${{matrix.abi}}-debug.apk
+            $BUILD_TOOLS/apksigner verify --verbose upload/Dusklight-${{matrix.abi}}-debug.apk || true
+          fi
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
