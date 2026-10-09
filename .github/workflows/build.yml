@@ -215,11 +215,13 @@ jobs:
         working-directory: platforms/android
         run: ./gradlew :app:assembleRelease --rerun-tasks
 
-      - name: Stage artifacts
+      - name: Sign APK
         run: |
+          keytool -genkeypair -v -keystore release.keystore -alias dusk -keyalg RSA -keysize 2048 -validity 10000 -storepass dusklight -keypass dusklight -dname "CN=Dusklight, OU=Mobile, O=Twilit, L=Hyrule, ST=Realm, C=US"
           mkdir -p upload/sdk
           cp build/*/stub-android-*.so upload/sdk/
-          cp platforms/android/app/build/outputs/apk/release/app-${{matrix.abi}}-release-unsigned.apk upload/
+          $ANDROID_HOME/build-tools/36.1.0/apksigner sign --ks release.keystore --ks-key-alias dusk --ks-pass pass:dusklight --key-pass pass:dusklight --out upload/Dusklight-${{matrix.abi}}.apk platforms/android/app/build/outputs/apk/release/app-${{matrix.abi}}-release-unsigned.apk
+          $ANDROID_HOME/build-tools/36.1.0/apksigner verify upload/Dusklight-${{matrix.abi}}.apk
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
