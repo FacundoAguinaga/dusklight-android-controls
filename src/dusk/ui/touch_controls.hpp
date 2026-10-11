@@ -133,7 +133,7 @@ private:
     clock::time_point mCameraTouchStartTime{};
     clock::time_point mLastCameraTapTime{};
     Rml::Vector2f mLastCameraTapPos{};
-    bool mTriggerCameraResetPending = false;
+    clock::time_point mCameraResetEndTime{};
 
     // Advanced Touch Controls Enhancements
     Rml::Vector2f mCameraVelocity{};

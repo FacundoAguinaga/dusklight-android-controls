@@ -80,6 +80,7 @@ constexpr auto kLDoubleTapWindow = std::chrono::milliseconds(300);
 constexpr auto kCameraDoubleTapWindow = std::chrono::milliseconds(280);
 constexpr float kCameraDoubleTapMaxDistDp = 26.f;
 constexpr float kCameraZoneTopDp = 16.f;
+constexpr auto kCameraResetHoldDuration = std::chrono::milliseconds(450);
 constexpr auto kHoldActionDuration = std::chrono::milliseconds(450);
 constexpr float kFaceIconTargetRatio = 0.76f;
 constexpr float kPressedScale = 0.94f;
@@ -761,7 +762,7 @@ void TouchControls::clear_motion_touch_input() noexcept {
     mCameraVelocity = {};
     mLastCameraMotionTime = {};
     mAutoRunActive = false;
-    mTriggerCameraResetPending = false;
+    mCameraResetEndTime = {};
     mLastCameraTapTime = {};
     touch_camera::clear();
     if (mControlStick != nullptr) {
@@ -854,10 +855,15 @@ void TouchControls::sync_virtual_input() noexcept {
     status.err = PAD_ERR_NONE;
     status.button = mButtonMask;
 
-    if (mLPressed || mLLatched || mManualLLatched || mTriggerCameraResetPending) {
+    const bool cameraResetActive =
+        mCameraResetEndTime != clock::time_point{} && (clock::now() < mCameraResetEndTime);
+    if (mCameraResetEndTime != clock::time_point{} && !cameraResetActive) {
+        mCameraResetEndTime = {};
+    }
+
+    if (mLPressed || mLLatched || mManualLLatched || cameraResetActive) {
         status.button |= PAD_TRIGGER_L;
         status.triggerLeft = kTriggerAnalog;
-        mTriggerCameraResetPending = false;
     }
     if (mRTriggerHeld) {
         status.button |= PAD_TRIGGER_R;
@@ -1418,6 +1424,7 @@ void TouchControls::handle_touch_down(Rml::Event& event) noexcept {
             mCameraTouchStartTime = clock::now();
             mCameraVelocity = {};
             mLastCameraMotionTime = {};
+            mCameraResetEndTime = {};
         }
     }
 }
@@ -1540,7 +1547,7 @@ void TouchControls::handle_touch_up(Rml::Event& event) noexcept {
                 tapDist <= maxTapDist * 1.5f)
             {
                 // Doble toque detectado en la zona de cámara: recentrar cámara (L-Reset)
-                mTriggerCameraResetPending = true;
+                mCameraResetEndTime = now + kCameraResetHoldDuration;
                 aurora::device::rumble(30000, 30000, 20);
                 mLastCameraTapTime = {};
             } else {
