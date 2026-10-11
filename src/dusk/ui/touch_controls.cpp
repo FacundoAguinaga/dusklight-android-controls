@@ -1,10 +1,13 @@
 #include "touch_controls.hpp"
 #include "touch_controls_common.hpp"
 
-#include <aurora/device.hpp>
 #include <aurora/rmlui.hpp>
 #include <dolphin/pad.h>
 #include <fmt/format.h>
+
+namespace aurora::device {
+void rumble(uint16_t lowFreq, uint16_t highFreq, uint16_t durationMs) noexcept;
+}
 
 #include <algorithm>
 #include <array>
