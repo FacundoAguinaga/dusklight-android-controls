@@ -185,6 +185,7 @@ Rml::String touch_controls_document_source() {
 <body id="root">
     <touch-stick id="control-stick">
         <stick-ring />
+        <stick-autorun id="stick-autorun"><glyph>&#xe5ce;</glyph><span>RUN</span></stick-autorun>
         <stick-knob id="control-knob" />
     </touch-stick>
 )RML"} + Rml::String{fragment.data(), fragment.size()} +
@@ -326,10 +327,22 @@ FaceButtonState z_button_state() {
 }
 
 FaceButtonState b_button_state() {
-    if (game_controls_suppressed()) {
+    auto* event = dComIfGp_getEvent();
+    const bool skipVisible = event != nullptr && event->mEventStatus == 1 &&
+                             event->mSkipFunc != nullptr && !event->chkFlag2(2);
+    const bool inPureCutscene = skipVisible && (dComIfGp_getMsgObjectClass() == nullptr || !dMsgObject_isTalkNowCheck());
+    if (inPureCutscene) {
         return {
             .iconSource = "",
             .visible = false,
+            .showIcon = false,
+        };
+    }
+
+    if (game_controls_suppressed()) {
+        return {
+            .iconSource = "",
+            .visible = true,
             .showIcon = false,
         };
     }
@@ -425,6 +438,7 @@ TouchControls::TouchControls()
       mRoot(mDocument != nullptr ? mDocument->GetElementById("root") : nullptr),
       mControlStick(mDocument != nullptr ? mDocument->GetElementById("control-stick") : nullptr),
       mControlKnob(mDocument != nullptr ? mDocument->GetElementById("control-knob") : nullptr),
+      mControlAutoRun(mDocument != nullptr ? mDocument->GetElementById("stick-autorun") : nullptr),
       mActionBar(mDocument != nullptr ? mDocument->GetElementById("action-bar") : nullptr) {
     sTouchControls = this;
     if (mDocument != nullptr) {
@@ -439,6 +453,22 @@ TouchControls::TouchControls()
                 info.oilFillId != nullptr ? mDocument->GetElementById(info.oilFillId) : nullptr;
             elements.count =
                 info.countId != nullptr ? mDocument->GetElementById(info.countId) : nullptr;
+        }
+
+        if (auto* settingsBtn = mDocument->GetElementById("launcher-settings")) {
+            listen(settingsBtn, aurora::rmlui::TouchStartEvent, [this](Rml::Event& event) {
+                if (!visible() || mWasSuppressed || !getSettings().game.enableTouchControls) {
+                    return;
+                }
+                aurora::device::rumble(25000, 25000, 20);
+                auto* context = aurora::rmlui::get_context();
+                if (context != nullptr) {
+                    context->ProcessMouseLeave();
+                    context->ProcessKeyDown(Rml::Input::KI_F1, 0);
+                    context->ProcessKeyUp(Rml::Input::KI_F1, 0);
+                }
+                event.StopPropagation();
+            });
         }
     }
 
@@ -770,6 +800,12 @@ void TouchControls::clear_motion_touch_input() noexcept {
     touch_camera::clear();
     if (mControlStick != nullptr) {
         mControlStick->SetClass("active", false);
+        mControlStick->SetClass("autorun-locked", false);
+    }
+    if (mControlAutoRun != nullptr) {
+        mControlAutoRun->SetClass("visible", false);
+        mControlAutoRun->SetClass("ready", false);
+        mControlAutoRun->SetClass("locked", false);
     }
 }
 
@@ -832,6 +868,7 @@ void TouchControls::sync_touch_state() noexcept {
                 clamped_stick_delta(mMoveTouch.start, mMoveTouch.current, stickRadius);
             const float knobRadius = kStickKnobRadiusDp * touch_dp_scale();
             mControlStick->SetClass("active", true);
+            mControlStick->SetClass("autorun-locked", mAutoRunActive);
             mControlStick->SetProperty(Rml::PropertyId::Left,
                 Rml::Property(mMoveTouch.start.x - stickRadius, Rml::Unit::PX));
             mControlStick->SetProperty(Rml::PropertyId::Top,
@@ -840,8 +877,36 @@ void TouchControls::sync_touch_state() noexcept {
                 Rml::Property(stickRadius + delta.x - knobRadius, Rml::Unit::PX));
             mControlKnob->SetProperty(Rml::PropertyId::Top,
                 Rml::Property(stickRadius + delta.y - knobRadius, Rml::Unit::PX));
+
+            if (mControlAutoRun != nullptr) {
+                const auto rawDelta = mMoveTouch.current - mMoveTouch.start;
+                const bool pushingUp = rawDelta.y < -stickRadius * 0.35f && std::abs(rawDelta.x) < stickRadius * 0.9f;
+                const bool ready = rawDelta.y < -stickRadius * 1.0f && std::abs(rawDelta.x) < stickRadius * 0.9f;
+                mControlAutoRun->SetClass("visible", pushingUp || mAutoRunActive);
+                mControlAutoRun->SetClass("ready", ready && !mAutoRunActive);
+                mControlAutoRun->SetClass("locked", mAutoRunActive);
+            }
+        } else if (mAutoRunActive && stickRadius > 0.f) {
+            const float knobRadius = kStickKnobRadiusDp * touch_dp_scale();
+            mControlStick->SetClass("active", true);
+            mControlStick->SetClass("autorun-locked", true);
+            mControlKnob->SetProperty(Rml::PropertyId::Left,
+                Rml::Property(stickRadius - knobRadius, Rml::Unit::PX));
+            mControlKnob->SetProperty(Rml::PropertyId::Top,
+                Rml::Property(-knobRadius, Rml::Unit::PX));
+            if (mControlAutoRun != nullptr) {
+                mControlAutoRun->SetClass("visible", true);
+                mControlAutoRun->SetClass("ready", false);
+                mControlAutoRun->SetClass("locked", true);
+            }
         } else {
             mControlStick->SetClass("active", false);
+            mControlStick->SetClass("autorun-locked", false);
+            if (mControlAutoRun != nullptr) {
+                mControlAutoRun->SetClass("visible", false);
+                mControlAutoRun->SetClass("ready", false);
+                mControlAutoRun->SetClass("locked", false);
+            }
         }
     }
 
@@ -1001,6 +1066,12 @@ void TouchControls::sync_visual_state() noexcept {
         mAutoRunActive = false;
         if (mControlStick != nullptr) {
             mControlStick->SetClass("active", false);
+            mControlStick->SetClass("autorun-locked", false);
+        }
+        if (mControlAutoRun != nullptr) {
+            mControlAutoRun->SetClass("visible", false);
+            mControlAutoRun->SetClass("ready", false);
+            mControlAutoRun->SetClass("locked", false);
         }
     }
     const auto& lTrigger = mControlElements[static_cast<size_t>(Control::L)];
@@ -1403,6 +1474,14 @@ void TouchControls::handle_touch_down(Rml::Event& event) noexcept {
 
     if (inAnalogZone && inLeftZone) {
         mAutoRunActive = false;
+        if (mControlAutoRun != nullptr) {
+            mControlAutoRun->SetClass("visible", false);
+            mControlAutoRun->SetClass("ready", false);
+            mControlAutoRun->SetClass("locked", false);
+        }
+        if (mControlStick != nullptr) {
+            mControlStick->SetClass("autorun-locked", false);
+        }
     }
 
     if (!mMoveTouch.active && inLeftZone && inAnalogZone) {
@@ -1473,18 +1552,20 @@ void TouchControls::handle_touch_motion(Rml::Event& event) noexcept {
             const float length = std::sqrt(delta.x * delta.x + delta.y * delta.y);
 
             // Auto-run forward lock
-            if (delta.y < -stickRadius * 1.35f && std::abs(delta.x) < stickRadius * 0.8f) {
+            const bool isAimingUp = delta.y < -stickRadius * 0.35f && std::abs(delta.x) < stickRadius * 0.9f;
+            if (delta.y <= -stickRadius * 1.30f && std::abs(delta.x) < stickRadius * 0.9f) {
                 if (!mAutoRunActive) {
                     mAutoRunActive = true;
                     aurora::device::rumble(35000, 35000, 35);
                 }
-            } else if (delta.y > -stickRadius * 0.4f && mAutoRunActive) {
+            } else if (delta.y > -stickRadius * 0.5f && mAutoRunActive) {
                 mAutoRunActive = false;
             }
 
             // Dynamic follow-through: si el dedo se mueve más allá del radio, el stick
-            // se desplaza suavemente para responder de inmediato ante cambios de dirección.
-            if (length > stickRadius) {
+            // se desplaza suavemente para responder de inmediato ante cambios de dirección,
+            // EXCEPTO si estamos arrastrando hacia arriba hacia la zona de auto-run.
+            if (length > stickRadius && !isAimingUp) {
                 mMoveTouch.start = mMoveTouch.current - (delta / length) * stickRadius;
             }
         }

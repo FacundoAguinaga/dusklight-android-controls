@@ -324,6 +324,11 @@ touch-stick.active {
     opacity: 1;
 }
 
+touch-stick.autorun-locked {
+    opacity: 1;
+    border-color: rgba(76, 175, 80, 50%);
+}
+
 stick-ring {
     position: absolute;
     left: 18dp;
@@ -335,6 +340,64 @@ stick-ring {
     border-color: rgba(var(--color-white-rgb), 18%);
 }
 
+stick-autorun {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    position: absolute;
+    left: 38dp;
+    top: -42dp;
+    width: 48dp;
+    height: 36dp;
+    border-radius: 18dp;
+    background-color: rgba(22, 24, 28, 60%);
+    border-width: 1dp;
+    border-color: rgba(var(--color-white-rgb), 30%);
+    opacity: 0;
+    transform: scale(0.8);
+    transition: opacity 0.15s linear-in-out, transform 0.15s linear-in-out,
+                background-color 0.15s linear-in-out, border-color 0.15s linear-in-out;
+    pointer-events: none;
+}
+
+stick-autorun.visible {
+    opacity: 0.75;
+    transform: scale(1.0);
+}
+
+stick-autorun.ready {
+    opacity: 0.95;
+    transform: scale(1.1);
+    border-color: rgba(128, 222, 234, 85%);
+    background-color: rgba(34, 112, 123, 75%);
+}
+
+stick-autorun.locked {
+    opacity: 1;
+    transform: scale(1.15);
+    background-color: rgba(34, 139, 34, 85%);
+    border-color: rgba(144, 238, 144, 95%);
+    box-shadow: rgba(76, 175, 80, 75%) 0 0 8dp 2dp;
+}
+
+stick-autorun glyph {
+    display: block;
+    font-family: var(--font-family-icons);
+    font-size: 16dp;
+    line-height: 1;
+    color: rgba(var(--color-white-rgb), 95%);
+}
+
+stick-autorun span {
+    display: block;
+    font-size: 9dp;
+    line-height: 1;
+    margin-top: 1dp;
+    letter-spacing: 0.5dp;
+    color: rgba(var(--color-white-rgb), 90%);
+}
+
 stick-knob {
     position: absolute;
     width: 48dp;
@@ -344,3 +407,4 @@ stick-knob {
     border-width: 1dp;
     border-color: rgba(var(--color-white-rgb), 45%);
 }
+

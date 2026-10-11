@@ -62,7 +62,7 @@ constexpr std::array<TouchLayoutControlInfo, kTouchLayoutControlCount> kLayoutCo
             {
                 .x = 56.f,
                 .y = 0.f,
-                .w = 230.f,
+                .w = 280.f,
                 .h = 46.f,
                 .scale = 1.f,
                 .anchor = ControlAnchor::BottomLeft,
@@ -155,6 +155,8 @@ constexpr std::string_view kTouchControlsRmlFragment = R"RML(
         <button id="map" class="utility map"><icon><glyph>&#xe55b;</glyph></icon></button>
         <separator />
         <button id="collections" class="utility collections"><icon><glyph>&#xe034;</glyph></icon></button>
+        <separator />
+        <button id="launcher-settings" class="utility settings"><icon><glyph>&#xe8b8;</glyph></icon></button>
     </action-bar>
     <button id="skip" class="control skip"><icon><glyph>&#xe044;</glyph></icon></button>
 
