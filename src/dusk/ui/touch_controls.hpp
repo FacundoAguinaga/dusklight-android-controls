@@ -24,6 +24,7 @@ enum class ControlOverride {
 bool get_equip_target(int slot, EquipTarget& target) noexcept;
 void set_control_override(Control control, ControlOverride override) noexcept;
 void sync_virtual_input() noexcept;
+bool is_touch_spin_active() noexcept;
 
 class TouchControls final : public Document {
 public:
@@ -71,7 +72,7 @@ private:
     void release_control(Control control) noexcept;
     void sync_control_button_mask() noexcept;
     bool fire_control_action(Control control, ControlAction action) noexcept;
-    bool start_control_touch(SDL_FingerID id, Control control) noexcept;
+    bool start_control_touch(SDL_FingerID id, Control control, Rml::Vector2f position) noexcept;
     void set_control_visual(Control control, bool pressed) noexcept;
     void sync_l_lock_state() noexcept;
     void clear_motion_touch_input() noexcept;
@@ -133,6 +134,19 @@ private:
     clock::time_point mLastCameraTapTime{};
     Rml::Vector2f mLastCameraTapPos{};
     bool mTriggerCameraResetPending = false;
+
+    // Advanced Touch Controls Enhancements
+    Rml::Vector2f mCameraVelocity{};
+    clock::time_point mLastCameraMotionTime{};
+    clock::time_point mLastUpdateTime{};
+    clock::time_point mLastBTapTime{};
+    bool mAutoRunActive = false;
+
+    struct ButtonTouchTracker {
+        Rml::Vector2f startPos{};
+        bool swiped = false;
+    };
+    std::array<ButtonTouchTracker, static_cast<size_t>(Control::COUNT)> mControlTouchTrackers{};
 };
 
 }  // namespace dusk::ui

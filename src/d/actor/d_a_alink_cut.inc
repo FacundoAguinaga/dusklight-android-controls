@@ -164,12 +164,20 @@ BOOL daAlink_c::checkCutTypeNoBlur() const {
            mCutType == CUT_TYPE_FINISH_STAB || checkNoResetFlg0(FLG0_WATER_IN_MOVE);
 }
 
+namespace dusk::ui {
+bool is_touch_spin_active() noexcept;
+}
+
 bool daAlink_c::checkCutTurnInput() const {
     #if TARGET_PC
     if (mDoCPd_c::getHoldR(PAD_1) && dusk::getSettings().game.easyQuickSpin) {
         return true;
     }
     #endif
+
+    if (dusk::ui::is_touch_spin_active()) {
+        return true;
+    }
 
     return 0xF800 < abs(field_0x3180);
 }

@@ -1,6 +1,7 @@
 #include "touch_controls.hpp"
 #include "touch_controls_common.hpp"
 
+#include <aurora/device.hpp>
 #include <aurora/rmlui.hpp>
 #include <dolphin/pad.h>
 #include <fmt/format.h>
@@ -23,11 +24,49 @@
 #include "dusk/touch_camera.h"
 #include "f_op/f_op_overlap_mng.h"
 #include "icon_provider.hpp"
+#include "m_Do/m_Do_audio.h"
 #include "m_Do/m_Do_graphic.h"
 #include "ui.hpp"
+#include "Z2AudioLib/Z2SeMgr.h"
 
 namespace dusk::ui {
+
+static int s_touchSpinFrames = 0;
+
+bool is_touch_spin_active() noexcept {
+    return s_touchSpinFrames > 0;
+}
+
 namespace {
+
+void cycle_next_inventory_item(int selectItemIdx) noexcept {
+    if (dComIfGp_getLinkPlayer() == nullptr || daPy_py_c::checkNowWolf() != 0) {
+        return;
+    }
+    const int otherItemIdx = (selectItemIdx == SELECT_ITEM_X) ? SELECT_ITEM_Y : SELECT_ITEM_X;
+    const u8 otherSlot = dComIfGs_getSelectItemIndex(otherItemIdx);
+    const u8 currentSlot = dComIfGs_getSelectItemIndex(selectItemIdx);
+
+    int nextSlot = -1;
+    for (int step = 1; step <= 24; ++step) {
+        int candidate = (currentSlot == 0xFF ? (step - 1) : (currentSlot + step)) % 24;
+        if (candidate == otherSlot) {
+            continue;
+        }
+        u8 item = dComIfGs_getItem(candidate, false);
+        if (item != dItemNo_NONE_e) {
+            nextSlot = candidate;
+            break;
+        }
+    }
+
+    if (nextSlot >= 0 && nextSlot != currentSlot) {
+        dComIfGs_setMixItemIndex(selectItemIdx, 0xFF);
+        dComIfGs_setSelectItemIndex(selectItemIdx, static_cast<u8>(nextSlot));
+        dComIfGp_setSelectItem(selectItemIdx);
+        mDoAud_seStartMenu(Z2SE_SY_ITEM_SET_X);
+    }
+}
 
 constexpr u32 kPort = PAD_CHAN0;
 constexpr float kStickRadiusDp = 62.f;
@@ -286,7 +325,7 @@ FaceButtonState b_button_state() {
     if (game_controls_suppressed()) {
         return {
             .iconSource = "",
-            .visible = true,
+            .visible = false,
             .showIcon = false,
         };
     }
@@ -417,9 +456,12 @@ TouchControls::TouchControls()
             if (!visible() || mWasSuppressed || !getSettings().game.enableTouchControls) {
                 return;
             }
-            if (start_control_touch(touch_event_id(event), control)) {
+            if (start_control_touch(touch_event_id(event), control, touch_event_position(event))) {
                 event.StopPropagation();
             }
+        });
+        listen(element, aurora::rmlui::TouchMoveEvent, [this](Rml::Event& event) {
+            handle_touch_motion(event);
         });
         listen(element, aurora::rmlui::TouchEndEvent, [this](Rml::Event& event) {
             if (release_control_touch(touch_event_id(event), false)) {
@@ -556,6 +598,19 @@ void TouchControls::set_control_pressed(Control control, bool pressed) {
             break;
         }
         break;
+    case Control::B:
+        if (pressed) {
+            const auto now = clock::now();
+            constexpr auto kBDoubleTapWindow = std::chrono::milliseconds(300);
+            if (mLastBTapTime != clock::time_point{} && (now - mLastBTapTime) <= kBDoubleTapWindow) {
+                s_touchSpinFrames = 8;
+                aurora::device::rumble(45000, 45000, 40);
+                mLastBTapTime = {};
+            } else {
+                mLastBTapTime = now;
+            }
+        }
+        break;
     case Control::R:
         mRTriggerHeld = pressed;
         break;
@@ -584,7 +639,7 @@ bool TouchControls::fire_control_action(Control control, ControlAction action) n
     return true;
 }
 
-bool TouchControls::start_control_touch(SDL_FingerID id, Control control) noexcept {
+bool TouchControls::start_control_touch(SDL_FingerID id, Control control, Rml::Vector2f position) noexcept {
     const auto index = static_cast<size_t>(control);
     if (index >= mControlTouches.size()) {
         return false;
@@ -601,6 +656,12 @@ bool TouchControls::start_control_touch(SDL_FingerID id, Control control) noexce
         .active = true,
         .longPressFired = false,
     };
+    if (index < mControlTouchTrackers.size()) {
+        mControlTouchTrackers[index] = {
+            .startPos = position,
+            .swiped = false,
+        };
+    }
     set_control_pressed(control, true);
     return true;
 }
@@ -634,6 +695,9 @@ void TouchControls::sync_control_button_mask() noexcept {
     u16 buttonMask = 0;
     for (size_t i = 0; i < mControlTouches.size() && i < kControls.size(); ++i) {
         if (mControlTouches[i].active) {
+            if (i < mControlTouchTrackers.size() && mControlTouchTrackers[i].swiped) {
+                continue;
+            }
             buttonMask |= kControls[i].padButton;
         }
     }
@@ -646,7 +710,11 @@ void TouchControls::set_control_visual(Control control, bool pressed) noexcept {
     if (index >= mControlVisualPressed.size()) {
         return;
     }
+    const bool wasPressed = mControlVisualPressed[index];
     mControlVisualPressed[index] = pressed;
+    if (pressed && !wasPressed) {
+        aurora::device::rumble(25000, 25000, 15);
+    }
     if (element != nullptr) {
         element->SetClass("pressed", pressed);
     }
@@ -690,6 +758,9 @@ void TouchControls::sync_l_lock_state() noexcept {
 void TouchControls::clear_motion_touch_input() noexcept {
     mMoveTouch = {};
     mCameraTouch = {};
+    mCameraVelocity = {};
+    mLastCameraMotionTime = {};
+    mAutoRunActive = false;
     mTriggerCameraResetPending = false;
     mLastCameraTapTime = {};
     touch_camera::clear();
@@ -809,6 +880,8 @@ void TouchControls::sync_virtual_input() noexcept {
             status.stickY = stickY;
             break;
         }
+    } else if (mAutoRunActive && !game_controls_suppressed()) {
+        status.stickY = 127;
     }
 
     mWantsVirtualPad = status.button != 0 || status.stickX != 0 || status.stickY != 0 ||
@@ -915,6 +988,12 @@ void TouchControls::sync_visual_state() noexcept {
     }
 
     const bool hideGameplayControls = game_controls_suppressed();
+    if (hideGameplayControls) {
+        mAutoRunActive = false;
+        if (mControlStick != nullptr) {
+            mControlStick->SetClass("active", false);
+        }
+    }
     const auto& lTrigger = mControlElements[static_cast<size_t>(Control::L)];
     const auto& rTrigger = mControlElements[static_cast<size_t>(Control::R)];
     const bool lHidden = hideGameplayControls && !control_override_active(Control::L);
@@ -1140,6 +1219,27 @@ void TouchControls::sync_control_displays() noexcept {
 }
 
 void TouchControls::update() {
+    const auto now = clock::now();
+    float dt = 0.016f;
+    if (mLastUpdateTime != clock::time_point{}) {
+        dt = std::chrono::duration<float>(now - mLastUpdateTime).count();
+        dt = std::clamp(dt, 0.001f, 0.1f);
+    }
+    mLastUpdateTime = now;
+
+    if (s_touchSpinFrames > 0) {
+        --s_touchSpinFrames;
+    }
+
+    if (!mCameraTouch.active && (mCameraVelocity.x != 0.f || mCameraVelocity.y != 0.f)) {
+        touch_camera::add_delta(mCameraVelocity.x * dt, mCameraVelocity.y * dt);
+        const float friction = std::exp(-8.0f * dt);
+        mCameraVelocity *= friction;
+        if (std::abs(mCameraVelocity.x) < 5.f && std::abs(mCameraVelocity.y) < 5.f) {
+            mCameraVelocity = {};
+        }
+    }
+
     sync_visibility();
     sync_control_long_presses();
     sync_safe_area();
@@ -1158,7 +1258,8 @@ bool TouchControls::release_control_touch(SDL_FingerID id, bool cancelled) noexc
         }
 
         const auto control = static_cast<Control>(i);
-        const bool shouldFireTapAction = !cancelled && !touch.longPressFired;
+        const bool swiped = (i < mControlTouchTrackers.size()) && mControlTouchTrackers[i].swiped;
+        const bool shouldFireTapAction = !cancelled && !touch.longPressFired && !swiped;
         touch = {};
         set_control_pressed(control, false);
         if (shouldFireTapAction) {
@@ -1291,6 +1392,10 @@ void TouchControls::handle_touch_down(Rml::Event& event) noexcept {
         return;
     }
 
+    if (inAnalogZone && inLeftZone) {
+        mAutoRunActive = false;
+    }
+
     if (!mMoveTouch.active && inLeftZone && inAnalogZone) {
         mMoveTouch = {
             .id = id,
@@ -1311,6 +1416,8 @@ void TouchControls::handle_touch_down(Rml::Event& event) noexcept {
             };
             mCameraTouchStartPos = position;
             mCameraTouchStartTime = clock::now();
+            mCameraVelocity = {};
+            mLastCameraMotionTime = {};
         }
     }
 }
@@ -1328,12 +1435,43 @@ void TouchControls::handle_touch_motion(Rml::Event& event) noexcept {
 
     const auto id = touch_event_id(event);
     const auto position = touch_event_position(event);
+
+    for (size_t i = 0; i < mControlTouches.size(); ++i) {
+        if (mControlTouches[i].active && mControlTouches[i].id == id) {
+            const auto control = static_cast<Control>(i);
+            if (control == Control::X || control == Control::Y) {
+                auto& tracker = mControlTouchTrackers[i];
+                if (!tracker.swiped) {
+                    const auto delta = position - tracker.startPos;
+                    const float swipeThreshold = 32.f * touch_dp_scale();
+                    if (delta.y <= -swipeThreshold) {
+                        tracker.swiped = true;
+                        sync_control_button_mask();
+                        cycle_next_inventory_item(control == Control::X ? SELECT_ITEM_X : SELECT_ITEM_Y);
+                        aurora::device::rumble(32000, 32000, 25);
+                    }
+                }
+            }
+        }
+    }
+
     if (mMoveTouch.active && mMoveTouch.id == id) {
         mMoveTouch.current = position;
         const float stickRadius = kStickRadiusDp * touch_dp_scale();
         if (stickRadius > 0.f) {
             const auto delta = mMoveTouch.current - mMoveTouch.start;
             const float length = std::sqrt(delta.x * delta.x + delta.y * delta.y);
+
+            // Auto-run forward lock
+            if (delta.y < -stickRadius * 1.35f && std::abs(delta.x) < stickRadius * 0.8f) {
+                if (!mAutoRunActive) {
+                    mAutoRunActive = true;
+                    aurora::device::rumble(35000, 35000, 35);
+                }
+            } else if (delta.y > -stickRadius * 0.4f && mAutoRunActive) {
+                mAutoRunActive = false;
+            }
+
             // Dynamic follow-through: si el dedo se mueve más allá del radio, el stick
             // se desplaza suavemente para responder de inmediato ante cambios de dirección.
             if (length > stickRadius) {
@@ -1342,6 +1480,7 @@ void TouchControls::handle_touch_motion(Rml::Event& event) noexcept {
         }
     }
     if (mCameraTouch.active && mCameraTouch.id == id) {
+        const auto now = clock::now();
         const auto delta = position - mCameraTouch.current;
         mCameraTouch.current = position;
         const float scale = touch_dp_scale();
@@ -1356,6 +1495,17 @@ void TouchControls::handle_touch_motion(Rml::Event& event) noexcept {
             }
 
             touch_camera::add_delta(deltaX, deltaY);
+
+            if (mLastCameraMotionTime != clock::time_point{}) {
+                const auto dt = std::chrono::duration<float>(now - mLastCameraMotionTime).count();
+                if (dt > 0.0001f && dt < 0.1f) {
+                    const Rml::Vector2f instantVel{deltaX / dt, deltaY / dt};
+                    mCameraVelocity = mCameraVelocity * 0.3f + instantVel * 0.7f;
+                }
+            } else {
+                mCameraVelocity = {};
+            }
+            mLastCameraMotionTime = now;
         }
     }
 }
@@ -1391,14 +1541,32 @@ void TouchControls::handle_touch_up(Rml::Event& event) noexcept {
             {
                 // Doble toque detectado en la zona de cámara: recentrar cámara (L-Reset)
                 mTriggerCameraResetPending = true;
+                aurora::device::rumble(30000, 30000, 20);
                 mLastCameraTapTime = {};
             } else {
                 mLastCameraTapTime = now;
                 mLastCameraTapPos = position;
             }
+            mCameraVelocity = {};
         } else {
             mLastCameraTapTime = {};
+            if (mLastCameraMotionTime == clock::time_point{} ||
+                (now - mLastCameraMotionTime) > std::chrono::milliseconds(80) ||
+                dCamera_c::isAimActive())
+            {
+                mCameraVelocity = {};
+            } else {
+                constexpr float kMaxVelocity = 1500.f;
+                constexpr float kMinVelocity = 60.f;
+                const float speed = std::sqrt(mCameraVelocity.x * mCameraVelocity.x + mCameraVelocity.y * mCameraVelocity.y);
+                if (speed > kMaxVelocity) {
+                    mCameraVelocity *= (kMaxVelocity / speed);
+                } else if (speed < kMinVelocity) {
+                    mCameraVelocity = {};
+                }
+            }
         }
+        mLastCameraMotionTime = {};
         mCameraTouch = {};
     }
 }
@@ -1419,6 +1587,8 @@ void TouchControls::handle_touch_cancel(Rml::Event& event) noexcept {
     }
     if (mCameraTouch.active && mCameraTouch.id == id) {
         mCameraTouch = {};
+        mCameraVelocity = {};
+        mLastCameraMotionTime = {};
         mLastCameraTapTime = {};
     }
 }
